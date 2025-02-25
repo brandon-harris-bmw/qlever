@@ -1,6 +1,7 @@
 // Copyright 2015, University of Freiburg,
 // Chair of Algorithms and Data Structures.
 // Author: Björn Buchhold (buchhold@informatik.uni-freiburg.de)
+// Copyright 2025, Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
 
 #include "./Distinct.h"
 
@@ -37,30 +38,80 @@ VariableToColumnMap Distinct::computeVariableToColumnMap() const {
   return subtree_->getVariableColumns();
 }
 
-// _____________________________________________________________________________
+// Anonymous namespace: This class is not exposed outside this translation unit.
+namespace {
+// An input range that lazily applies a `DISTINCT` operation
 template <size_t WIDTH>
-Result::Generator Distinct::lazyDistinct(Result::LazyResult input,
-                                         bool yieldOnce) const {
-  IdTable aggregateTable{subtree_->getResultWidth(), allocator()};
-  LocalVocab aggregateVocab{};
-  std::optional<typename IdTableStatic<WIDTH>::row_type> previousRow =
-      std::nullopt;
-  for (auto& [idTable, localVocab] : input) {
-    IdTable result = distinct<WIDTH>(std::move(idTable), previousRow);
-    if (!result.empty()) {
-      previousRow.emplace(result.asStaticView<WIDTH>().back());
-      if (yieldOnce) {
-        aggregateVocab.mergeWith(std::array{std::move(localVocab)});
-        aggregateTable.insertAtEnd(result);
-      } else {
-        co_yield {std::move(result), std::move(localVocab)};
+struct LazyDistinct : ad_utility::InputRangeFromGet<Result::IdTableVocabPair> {
+  Result::LazyResult input_;
+  Result::LazyResult::iterator nextInput_;
+  bool yieldOnce_;
+  IdTable aggregateTable_;
+  LocalVocab aggregateVocab_{};
+  std::optional<typename IdTableStatic<WIDTH>::row_type> previousRow_{std::nullopt};
+
+  // Constructor. The `distinct` function performs the actual `Distinct`.
+  LazyDistinct(Result::LazyResult input,
+               const bool yieldOnce,
+               IdTable aggregateTable)
+      : input_(std::move(input)),
+        nextInput_{input_.begin()},
+        yieldOnce_{yieldOnce},
+        aggregateTable_{std::move(aggregateTable)} {}
+
+  // The `get` function that is needed for the `InputRangeFromGet`.
+  std::optional<Result::IdTableVocabPair> get() {
+    if (nextInput_ == input_.end()) {
+      return std::nullopt;
+    }
+    while (nextInput_ != input_.end()) {
+      auto& [idTable, localVocab] = *nextInput_;
+      nextInput_++;
+      IdTable result = distinct<WIDTH>(std::move(idTable), previousRow_);
+      if (!result.empty()) {
+        previousRow_.emplace(result.asStaticView<WIDTH>().back());
+        if (yieldOnce_) {
+          aggregateVocab_.mergeWith(std::array{std::move(localVocab)});
+          aggregateTable_.insertAtEnd(result);
+        } else {
+          return Result::IdTableVocabPair{std::move(result), std::move(localVocab)};
+        }
       }
     }
+    if (yieldOnce_) {
+      return Result::IdTableVocabPair{std::move(aggregateTable_), std::move(aggregateVocab_)};
+    } else {
+      return std::nullopt;
+    }
   }
-  if (yieldOnce) {
-    co_yield {std::move(aggregateTable), std::move(aggregateVocab)};
-  }
-}
+};
+}  // namespace
+
+// TODO bharris: Remove
+// _____________________________________________________________________________
+// template <size_t WIDTH>
+// Result::Generator Distinct::lazyDistinct(Result::LazyResult input,
+//                                          bool yieldOnce) const {
+//   IdTable aggregateTable{subtree_->getResultWidth(), allocator()};
+//   LocalVocab aggregateVocab{};
+//   std::optional<typename IdTableStatic<WIDTH>::row_type> previousRow =
+//       std::nullopt;
+//   for (auto& [idTable, localVocab] : input) {
+//     IdTable result = distinct<WIDTH>(std::move(idTable), previousRow);
+//     if (!result.empty()) {
+//       previousRow.emplace(result.asStaticView<WIDTH>().back());
+//       if (yieldOnce) {
+//         aggregateVocab.mergeWith(std::array{std::move(localVocab)});
+//         aggregateTable.insertAtEnd(result);
+//       } else {
+//         co_yield {std::move(result), std::move(localVocab)};
+//       }
+//     }
+//   }
+//   if (yieldOnce) {
+//     co_yield {std::move(aggregateTable), std::move(aggregateVocab)};
+//   }
+// }
 
 // _____________________________________________________________________________
 Result Distinct::computeResult(bool requestLaziness) {
@@ -77,9 +128,14 @@ Result Distinct::computeResult(bool requestLaziness) {
             subRes->getSharedLocalVocab()};
   }
 
+  IdTable aggregateTable{width, allocator()};
   auto generator =
-      CALL_FIXED_SIZE(width, &Distinct::lazyDistinct, this,
-                      std::move(subRes->idTables()), !requestLaziness);
+      // TODO bharris: Remove
+      // CALL_FIXED_SIZE(width, &Distinct::lazyDistinct, this,
+      //                 std::move(subRes->idTables()), !requestLaziness);
+      // LazyDistinct<width>{std::move(subRes->idTables()), !requestLaziness, std::move(aggregateTable)};
+      CALL_FIXED_SIZE(width, &LazyDistinct<width>::LazyDistinct, this,
+                        std::move(subRes->idTables()), !requestLaziness, std::move(aggregateTable));
   return requestLaziness
              ? Result{std::move(generator), resultSortedOn()}
              : Result{cppcoro::getSingleElement(std::move(generator)),
