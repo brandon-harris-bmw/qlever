@@ -119,63 +119,87 @@ class TransitivePathImpl : public TransitivePathBase {
 
   /**
    * @brief Compute the transitive hull.
-   * This function is called when no side is bound (or an id).
-   *
-   * @param sub A shared pointer to the sub result. Needs to be kept alive for
-   * the lifetime of this generator.
-   * @param startSide The start side for the transitive hull
-   * @param targetSide The target side for the transitive hull
-   * @param yieldOnce If true, the generator will yield only a single time.
+   * This generator is used when no side is bound (or an id).
    */
+  struct ComputeTransitivePath
+      : ad_utility::InputRangeFromGet<Result::IdTableVocabPair> {
+    const TransitivePathImpl& parent_;
+    ad_utility::Timer timer_;
+    // These fields are pointers instead of values so that references to the
+    // data will remain valid after moving the generator
+    std::unique_ptr<T> edges_;
+    std::unique_ptr<Set> nodesWithoutDuplicates_;
+    std::unique_ptr<detail::TableColumnWithVocab<const Set&>> tableInfo_;
+    Result::Generator result_;
+    std::optional<Result::Generator::iterator> nextResult_;
 
-  Result::Generator computeTransitivePath(std::shared_ptr<const Result> sub,
-                                          const TransitivePathSide& startSide,
-                                          const TransitivePathSide& targetSide,
-                                          bool yieldOnce) const {
-    ad_utility::Timer timer{ad_utility::Timer::Started};
+    /**
+     * @param parent A reference to the TransitivePathImpl which uses this
+     * generator
+     * @param sub A shared pointer to the sub result. Needs to be kept alive for
+     * the lifetime of this generator.
+     * @param startSide The start side for the transitive hull
+     * @param targetSide The target side for the transitive hull
+     * @param yieldOnce If true, the generator will yield only a single time.
+     */
+    ComputeTransitivePath(const TransitivePathImpl& parent,
+                          std::shared_ptr<const Result> sub,
+                          const TransitivePathSide& startSide,
+                          const TransitivePathSide& targetSide, bool yieldOnce)
+        : parent_{parent},
+          timer_{ad_utility::Timer::Started},
+          edges_{std::make_unique<T>(
+              parent_.setupEdgesMap(sub->idTable(), startSide, targetSide))},
+          nodesWithoutDuplicates_{std::make_unique<Set>(parent_.allocator())} {
+      auto nodesWithDuplicates =
+          parent_.setupNodes(sub->idTable(), startSide, targetSide);
+      for (const auto& span : nodesWithDuplicates) {
+        nodesWithoutDuplicates_->insert(span.begin(), span.end());
+      }
 
-    auto edges = setupEdgesMap(sub->idTable(), startSide, targetSide);
-    auto nodesWithDuplicates =
-        setupNodes(sub->idTable(), startSide, targetSide);
-    Set nodesWithoutDuplicates{allocator()};
-    for (const auto& span : nodesWithDuplicates) {
-      nodesWithoutDuplicates.insert(span.begin(), span.end());
+      parent_.runtimeInfo().addDetail("Initialization time", timer_.msecs());
+
+      // Technically we should pass the localVocab of `sub` here, but this will
+      // just lead to a merge with itself later on in the pipeline.
+      tableInfo_ = std::make_unique<detail::TableColumnWithVocab<const Set&>>(
+          nullptr, *nodesWithoutDuplicates_, LocalVocab{});
+
+      NodeGenerator hull = parent_.transitiveHull(
+          *edges_, sub->getCopyOfLocalVocab(), std::span{tableInfo_.get(), 1},
+          targetSide.isVariable()
+              ? std::nullopt
+              : std::optional{std::get<Id>(targetSide.value_)},
+          yieldOnce);
+
+      result_ = parent_.fillTableWithHull(std::move(hull), startSide.outputCol_,
+                                          targetSide.outputCol_, yieldOnce);
     }
 
-    runtimeInfo().addDetail("Initialization time", timer.msecs());
-
-    // Technically we should pass the localVocab of `sub` here, but this will
-    // just lead to a merge with itself later on in the pipeline.
-    detail::TableColumnWithVocab<const Set&> tableInfo{
-        nullptr, nodesWithoutDuplicates, LocalVocab{}};
-
-    NodeGenerator hull = transitiveHull(
-        edges, sub->getCopyOfLocalVocab(), std::span{&tableInfo, 1},
-        targetSide.isVariable()
-            ? std::nullopt
-            : std::optional{std::get<Id>(targetSide.value_)},
-        yieldOnce);
-
-    auto result = fillTableWithHull(std::move(hull), startSide.outputCol_,
-                                    targetSide.outputCol_, yieldOnce);
-
-    // Iterate over generator to prevent lifetime issues
-    for (auto& pair : result) {
-      co_yield pair;
+    std::optional<Result::IdTableVocabPair> get() {
+      if (!nextResult_.has_value()) {
+        nextResult_ = result_.begin();
+      } else if (nextResult_.value() != result_.end()) {
+        nextResult_.value()++;
+      }
+      if (nextResult_.value() == result_.end()) {
+        return std::nullopt;
+      }
+      return std::optional{std::move(*(nextResult_.value()))};
     }
-  }
+  };
 
- protected:
-  /**
-   * @brief Compute the result for this TransitivePath operation
-   * This function chooses the start and target side for the transitive
-   * hull computation. This choice of the start side has a large impact
-   * on the time it takes to compute the hull. The set of nodes on the
-   * start side should be as small as possible.
-   *
-   * @return Result The result of the TransitivePath operation
-   */
-  Result computeResult(bool requestLaziness) override {
+  protected :
+      /**
+       * @brief Compute the result for this TransitivePath operation
+       * This function chooses the start and target side for the transitive
+       * hull computation. This choice of the start side has a large impact
+       * on the time it takes to compute the hull. The set of nodes on the
+       * start side should be as small as possible.
+       *
+       * @return Result The result of the TransitivePath operation
+       */
+      Result
+      computeResult(bool requestLaziness) override {
     auto [startSide, targetSide] = decideDirection();
     // In order to traverse the graph represented by this result, we need random
     // access across the whole table, so it doesn't make sense to lazily compute
@@ -196,11 +220,13 @@ class TransitivePathImpl : public TransitivePathBase {
                               Result::LazyResult{std::move(gen)}),
                           resultSortedOn()};
     }
-    auto gen = computeTransitivePath(std::move(subRes), startSide, targetSide,
-                                     !requestLaziness);
-    return requestLaziness ? Result{std::move(gen), resultSortedOn()}
-                           : Result{cppcoro::getSingleElement(std::move(gen)),
-                                    resultSortedOn()};
+    auto gen = ComputeTransitivePath{*this, std::move(subRes), startSide,
+                                     targetSide, !requestLaziness};
+    return requestLaziness
+               ? Result{Result::LazyResult{std::move(gen)}, resultSortedOn()}
+               : Result{cppcoro::getSingleElement<Result::IdTableVocabPair>(
+                            Result::LazyResult{std::move(gen)}),
+                        resultSortedOn()};
   }
 
   /**
