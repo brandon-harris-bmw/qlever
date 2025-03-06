@@ -90,7 +90,9 @@ class TransitivePathImpl : public TransitivePathBase {
       parent_.runtimeInfo().addDetail("Initialization time",
                                       timer_.msecs().count());
 
-      NodeGenerator hull = parent_.transitiveHull(
+      NodeGenerator hull = 
+          // parent_.transitiveHull(
+          TransitiveHull(parent_,
           *edges_, sub->getCopyOfLocalVocab(), std::move(nodes),
           targetSide.isVariable()
               ? std::nullopt
@@ -163,7 +165,9 @@ class TransitivePathImpl : public TransitivePathBase {
       tableInfo_ = std::make_unique<detail::TableColumnWithVocab<const Set&>>(
           nullptr, *nodesWithoutDuplicates_, LocalVocab{});
 
-      NodeGenerator hull = parent_.transitiveHull(
+      NodeGenerator hull = 
+          // parent_.transitiveHull(
+          TransitiveHull(parent_,
           *edges_, sub->getCopyOfLocalVocab(), std::span{tableInfo_.get(), 1},
           targetSide.isVariable()
               ? std::nullopt
@@ -270,20 +274,103 @@ class TransitivePathImpl : public TransitivePathBase {
   /**
    * @brief Compute the transitive hull starting at the given nodes,
    * using the given Map.
-   *
-   * @param edges Adjacency lists, mapping Ids (nodes) to their connected
-   * Ids.
-   * @param edgesVocab The `LocalVocab` holding the vocabulary of the edges.
-   * @param startNodes A range that yields an instantiation of
-   * `TableColumnWithVocab` that can be consumed to create a transitive hull.
-   * @param target Optional target Id. If supplied, only paths which end
-   * in this Id are added to the hull.
-   * @param yieldOnce This has to be set to the same value as the consuming
-   * code. When set to true, this will prevent yielding the same LocalVocab over
-   * and over again to make merging faster (because merging with an empty
-   * LocalVocab is a no-op).
-   * @return Map Maps each Id to its connected Ids in the transitive hull
    */
+  template<typename Node>
+  struct TransitiveHull
+   : ad_utility::InputRangeFromGet<NodeWithTargets> {
+    const TransitivePathImpl& parent_;
+    ad_utility::Timer timer_;
+    const T& edges_;
+    LocalVocab edgesVocab_;
+    Node startNodes_;
+    std::optional<Id> target_;
+    bool yieldOnce_;
+    std::optional<typename Node::Iterator> nextColumn_;
+    std::optional<typename Node::Iterator> nextNode_;
+    LocalVocab mergedVocab_;
+    size_t currentRow_;
+    bool returnedValueLastGetCall_ = false;
+
+    /**
+     * @param parent A reference to the TransitivePathImpl which uses this
+     * generator
+     * @param edges Adjacency lists, mapping Ids (nodes) to their connected
+     * Ids.
+     * @param edgesVocab The `LocalVocab` holding the vocabulary of the edges.
+     * @param startNodes A range that yields an instantiation of
+     * `TableColumnWithVocab` that can be consumed to create a transitive hull.
+     * @param target Optional target Id. If supplied, only paths which end
+     * in this Id are added to the hull.
+     * @param yieldOnce This has to be set to the same value as the consuming
+     * code. When set to true, this will prevent yielding the same LocalVocab over
+     * and over again to make merging faster (because merging with an empty
+     * LocalVocab is a no-op).
+     * @return Map Maps each Id to its connected Ids in the transitive hull
+     */
+     TransitiveHull(const TransitivePathImpl& parent, const T& edges, LocalVocab edgesVocab, Node startNodes,
+                    std::optional<Id> target, bool yieldOnce)
+        : parent_{parent},
+          timer_{ad_utility::Timer::Stopped},
+          edges_{edges},
+          edgesVocab_{std::move(edgesVocab)},
+          startNodes_{std::move(startNodes)},
+          target_{std::move(target)},
+          yieldOnce_{yieldOnce} {}
+
+    std::optional<NodeWithTargets> get() {
+      if (!nextColumn_.has_value()) {
+        nextColumn_ = startNodes_.begin();
+      }
+      while (nextColumn_.value() != startNodes_.end()) {
+        auto&& tableColumn = *(nextColumn_.value());
+        
+        // If we returned a value on the last call, skip setup steps.
+        // Rerun setup after the column is completely iterated. Iterator will
+        // be reset at the end of column iteration
+        if (!nextNode_.has_value()) {
+          timer_.cont();
+          mergedVocab_ = std::move(tableColumn.vocab_);
+          mergedVocab_.mergeWith(std::span{&edgesVocab_, 1});
+          currentRow_ = 0;
+          nextNode_ = tableColumn.column_.begin();
+        }
+        while (nextNode_.value() != tableColumn.column_.end()) {
+          if (!returnedValueLastGetCall_) {
+            Id startNodeId = *(nextNode_.value());
+            Set connectedNodes = parent_.findConnectedNodes(edges_, startNodeId, target_);
+            if (!connectedNodes.empty()) {
+              returnedValueLastGetCall_ = true;
+              parent_.runtimeInfo().addDetail("Hull time", timer_.msecs());
+              timer_.stop();
+              return NodeWithTargets{startNodeId, std::move(connectedNodes),
+                                     mergedVocab_.clone(), tableColumn.table_,
+                                     currentRow_};
+            }
+          }
+          if (returnedValueLastGetCall_) {
+            timer_.cont();
+            // Reset vocab to prevent merging the same vocab over and over again.
+            if (yieldOnce_) {
+              mergedVocab_ = LocalVocab{};
+            }
+            returnedValueLastGetCall_ = false;
+          }
+          currentRow_++;
+          nextNode_.value()++;
+        }
+        // Reset iterator so it can be reused for the next inner loop during
+        // the execution of the next iteration of the outer loop
+        nextNode_.reset();
+        nextColumn_.value()++;
+        timer_.stop();
+      }
+      // Don't reset nextColumn_ iterator. We have exhausted the values that 
+      // this generator should provide. Subsequent calls should only return
+      // nullopt
+      return std::nullopt;
+    }
+  };
+
   CPP_template(typename Node)(requires ql::ranges::range<Node>) NodeGenerator
       transitiveHull(const T& edges, LocalVocab edgesVocab, Node startNodes,
                      std::optional<Id> target, bool yieldOnce) const {
