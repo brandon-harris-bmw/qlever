@@ -2,6 +2,7 @@
 // Chair of Algorithms and Data Structures.
 // Author: Florian Kramer (florian.kramer@neptun.uni-freiburg.de)
 //         Johannes Herrmann (johannes.r.herrmann(at)gmail.com)
+// Copyright 2025, Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
 
 #ifndef QLEVER_SRC_ENGINE_TRANSITIVEPATHBASE_H
 #define QLEVER_SRC_ENGINE_TRANSITIVEPATHBASE_H
@@ -103,7 +104,7 @@ struct NodeWithTargets {
         row_{row} {}
 };
 
-using NodeGenerator = cppcoro::generator<NodeWithTargets>;
+using NodeGenerator = ad_utility::InputRangeFromGet<NodeWithTargets>;
 
 /**
  * @class TransitivePathBase
@@ -198,7 +199,7 @@ class TransitivePathBase : public Operation {
    * @param inputWidth The width of the input table that is referenced by the
    * elements of `hull`.
    */
-  Result::Generator fillTableWithHull(NodeGenerator hull, size_t startSideCol,
+  Result::Generator fillTableWithHull(std::unique_ptr<NodeGenerator> hull, size_t startSideCol,
                                       size_t targetSideCol, size_t skipCol,
                                       bool yieldOnce, size_t inputWidth) const;
 
@@ -213,7 +214,7 @@ class TransitivePathBase : public Operation {
    * the hull
    * @param yieldOnce If true, the generator will yield only a single time.
    */
-  Result::Generator fillTableWithHull(NodeGenerator hull, size_t startSideCol,
+  Result::Generator fillTableWithHull(std::unique_ptr<NodeGenerator> hull, size_t startSideCol,
                                       size_t targetSideCol,
                                       bool yieldOnce) const;
 
@@ -243,7 +244,7 @@ class TransitivePathBase : public Operation {
   uint64_t getSizeEstimateBeforeLimit() override;
 
   template <size_t INPUT_WIDTH, size_t OUTPUT_WIDTH>
-  Result::Generator fillTableWithHullImpl(NodeGenerator hull,
+  Result::Generator fillTableWithHullImpl(std::unique_ptr<NodeGenerator> hull,
                                           size_t startSideCol,
                                           size_t targetSideCol, bool yieldOnce,
                                           size_t skipCol = 0) const;

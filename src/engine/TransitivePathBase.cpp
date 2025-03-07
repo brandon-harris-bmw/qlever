@@ -2,6 +2,7 @@
 // Chair of Algorithms and Data Structures.
 // Author: Florian Kramer (florian.kramer@neptun.uni-freiburg.de)
 //         Johannes Herrmann (johannes.r.herrmann(at)gmail.com)
+// Copyright 2025, Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
 
 #include "TransitivePathBase.h"
 
@@ -108,7 +109,7 @@ TransitivePathBase::decideDirection() {
 
 // _____________________________________________________________________________
 Result::Generator TransitivePathBase::fillTableWithHull(
-    NodeGenerator hull, size_t startSideCol, size_t targetSideCol,
+    std::unique_ptr<NodeGenerator> hull, size_t startSideCol, size_t targetSideCol,
     size_t skipCol, bool yieldOnce, size_t inputWidth) const {
   return ad_utility::callFixedSize(
       std::array{inputWidth, getResultWidth()},
@@ -119,7 +120,7 @@ Result::Generator TransitivePathBase::fillTableWithHull(
 }
 
 // _____________________________________________________________________________
-Result::Generator TransitivePathBase::fillTableWithHull(NodeGenerator hull,
+Result::Generator TransitivePathBase::fillTableWithHull(std::unique_ptr<NodeGenerator> hull,
                                                         size_t startSideCol,
                                                         size_t targetSideCol,
                                                         bool yieldOnce) const {
@@ -132,13 +133,13 @@ Result::Generator TransitivePathBase::fillTableWithHull(NodeGenerator hull,
 // _____________________________________________________________________________
 template <size_t INPUT_WIDTH, size_t OUTPUT_WIDTH>
 Result::Generator TransitivePathBase::fillTableWithHullImpl(
-    NodeGenerator hull, size_t startSideCol, size_t targetSideCol,
+    std::unique_ptr<NodeGenerator> hull, size_t startSideCol, size_t targetSideCol,
     bool yieldOnce, size_t skipCol) const {
   ad_utility::Timer timer{ad_utility::Timer::Stopped};
   size_t outputRow = 0;
   IdTableStatic<OUTPUT_WIDTH> table{getResultWidth(), allocator()};
   LocalVocab mergedVocab{};
-  for (auto& [node, linkedNodes, localVocab, idTable, inputRow] : hull) {
+  for (auto& [node, linkedNodes, localVocab, idTable, inputRow] : *hull) {
     timer.cont();
     // As an optimization nodes without any linked nodes should not get yielded
     // in the first place.
