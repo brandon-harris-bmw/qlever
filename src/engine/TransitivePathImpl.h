@@ -90,9 +90,9 @@ class TransitivePathImpl : public TransitivePathBase {
       parent_.runtimeInfo().addDetail("Initialization time",
                                       timer_.msecs().count());
 
-      NodeGenerator hull = 
+      std::unique_ptr<NodeGenerator> hull = 
           // parent_.transitiveHull(
-          TransitiveHull(parent_,
+          std::make_unique<TransitiveHull<SetupNodes, std::span<const Id>>>(parent_,
           *edges_, sub->getCopyOfLocalVocab(), std::move(nodes),
           targetSide.value_, yieldOnce);
 
@@ -162,9 +162,9 @@ class TransitivePathImpl : public TransitivePathBase {
       tableInfo_ = std::make_unique<detail::TableColumnWithVocab<const Set&>>(
           nullptr, *nodesWithoutDuplicates_, LocalVocab{});
 
-      NodeGenerator hull = 
+      std::unique_ptr<NodeGenerator> hull = 
           // parent_.transitiveHull(
-          TransitiveHull(parent_,
+          std::make_unique<TransitiveHull<std::span<detail::TableColumnWithVocab<const Set&>>, const Set>>(parent_,
           *edges_, sub->getCopyOfLocalVocab(), ql::span{tableInfo_.get(), 1},
           targetSide.value_, yieldOnce);
 
@@ -269,7 +269,7 @@ class TransitivePathImpl : public TransitivePathBase {
    * @brief Compute the transitive hull starting at the given nodes,
    * using the given Map.
    */
-  template<typename Node>
+  template<typename Node, typename NodeColumnType>
   struct TransitiveHull
    : ad_utility::InputRangeFromGet<NodeWithTargets> {
     const TransitivePathImpl& parent_;
@@ -279,8 +279,8 @@ class TransitivePathImpl : public TransitivePathBase {
     Node startNodes_;
     std::optional<Id> targetId_;
     bool yieldOnce_;
-    std::optional<typename Node::Iterator> nextColumn_;
-    std::optional<typename Node::Iterator> nextNode_;
+    std::optional<typename Node::iterator> nextColumn_;
+    std::optional<typename NodeColumnType::const_iterator> nextNode_;
     LocalVocab mergedVocab_;
     size_t currentRow_;
     bool returnedValueLastGetCall_ = false;
@@ -329,7 +329,7 @@ class TransitivePathImpl : public TransitivePathBase {
           mergedVocab_ = std::move(tableColumn.vocab_);
           mergedVocab_.mergeWith(std::span{&edgesVocab_, 1});
           currentRow_ = 0;
-          nextNode_ = tableColumn.column_.begin();
+          nextNode_ = std::optional(tableColumn.column_.begin());
         }
         while (nextNode_.value() != tableColumn.column_.end()) {
           if (!returnedValueLastGetCall_) {
@@ -368,47 +368,47 @@ class TransitivePathImpl : public TransitivePathBase {
     }
   };
 
-  CPP_template(typename Node)(requires ql::ranges::range<Node>) NodeGenerator
-      transitiveHull(const T& edges, LocalVocab edgesVocab, Node startNodes,
-                     TripleComponent target, bool yieldOnce) const {
-    ad_utility::Timer timer{ad_utility::Timer::Stopped};
-    // `targetId` is only ever used for comparisons, and never stored in the
-    // result, so we use a separate local vocabulary.
-    LocalVocab targetHelper;
-    std::optional<Id> targetId =
-        target.isVariable()
-            ? std::nullopt
-            : std::optional{std::move(target).toValueId(
-                  _executionContext->getIndex().getVocab(), targetHelper)};
-    bool sameVariableOnBothSides =
-        !targetId.has_value() && lhs_.value_ == rhs_.value_;
-    for (auto&& tableColumn : startNodes) {
-      timer.cont();
-      LocalVocab mergedVocab = std::move(tableColumn.vocab_);
-      mergedVocab.mergeWith(edgesVocab);
-      size_t currentRow = 0;
-      for (Id startNode : tableColumn.column_) {
-        if (sameVariableOnBothSides) {
-          targetId = startNode;
-        }
-        Set connectedNodes = findConnectedNodes(edges, startNode, targetId);
-        if (!connectedNodes.empty()) {
-          runtimeInfo().addDetail("Hull time", timer.msecs());
-          timer.stop();
-          co_yield NodeWithTargets{startNode, std::move(connectedNodes),
-                                   mergedVocab.clone(), tableColumn.table_,
-                                   currentRow};
-          timer.cont();
-          // Reset vocab to prevent merging the same vocab over and over again.
-          if (yieldOnce) {
-            mergedVocab = LocalVocab{};
-          }
-        }
-        currentRow++;
-      }
-      timer.stop();
-    }
-  }
+  // CPP_template(typename Node)(requires ql::ranges::range<Node>) NodeGenerator
+  //     transitiveHull(const T& edges, LocalVocab edgesVocab, Node startNodes,
+  //                    TripleComponent target, bool yieldOnce) const {
+  //   ad_utility::Timer timer{ad_utility::Timer::Stopped};
+  //   // `targetId` is only ever used for comparisons, and never stored in the
+  //   // result, so we use a separate local vocabulary.
+  //   LocalVocab targetHelper;
+  //   std::optional<Id> targetId =
+  //       target.isVariable()
+  //           ? std::nullopt
+  //           : std::optional{std::move(target).toValueId(
+  //                 _executionContext->getIndex().getVocab(), targetHelper)};
+  //   bool sameVariableOnBothSides =
+  //       !targetId.has_value() && lhs_.value_ == rhs_.value_;
+  //   for (auto&& tableColumn : startNodes) {
+  //     timer.cont();
+  //     LocalVocab mergedVocab = std::move(tableColumn.vocab_);
+  //     mergedVocab.mergeWith(edgesVocab);
+  //     size_t currentRow = 0;
+  //     for (Id startNode : tableColumn.column_) {
+  //       if (sameVariableOnBothSides) {
+  //         targetId = startNode;
+  //       }
+  //       Set connectedNodes = findConnectedNodes(edges, startNode, targetId);
+  //       if (!connectedNodes.empty()) {
+  //         runtimeInfo().addDetail("Hull time", timer.msecs());
+  //         timer.stop();
+  //         co_yield NodeWithTargets{startNode, std::move(connectedNodes),
+  //                                  mergedVocab.clone(), tableColumn.table_,
+  //                                  currentRow};
+  //         timer.cont();
+  //         // Reset vocab to prevent merging the same vocab over and over again.
+  //         if (yieldOnce) {
+  //           mergedVocab = LocalVocab{};
+  //         }
+  //       }
+  //       currentRow++;
+  //     }
+  //     timer.stop();
+  //   }
+  // }
 
   /**
    * @brief Prepare a Map and a nodes vector for the transitive hull
