@@ -83,8 +83,7 @@ class TransitivePathImpl : public TransitivePathBase {
           timer_{ad_utility::Timer::Started},
           edges_{std::make_unique<T>(
               parent_.setupEdgesMap(sub->idTable(), startSide, targetSide))} {
-      cppcoro::generator<TableColumnWithVocab> nodes =
-          parent_.setupNodes(startSide, std::move(startSideResult));
+      auto nodes = SetupNodes{startSide, std::move(startSideResult)};
       // Setup nodes returns a generator, so this time measurement won't include
       // the time for each iteration, but every iteration step should have
       // constant overhead, which should be safe to ignore.
@@ -348,32 +347,64 @@ class TransitivePathImpl : public TransitivePathBase {
   /**
    * @brief Prepare a Map and a nodes vector for the transitive hull
    * computation.
-   *
-   * @param startSide The TransitivePathSide where the edges start
-   * @param startSideResult A `Result` wrapping an `IdTable` containing the Ids
-   * for the startSide
-   * @return cppcoro::generator<TableColumnWithVocab> An generator for
-   * the transitive hull computation
    */
-  static cppcoro::generator<TableColumnWithVocab> setupNodes(
-      const TransitivePathSide& startSide,
-      std::shared_ptr<const Result> startSideResult) {
-    if (startSideResult->isFullyMaterialized()) {
-      // Bound -> var|id
-      std::span<const Id> startNodes = startSideResult->idTable().getColumn(
-          startSide.treeAndCol_.value().second);
-      co_yield TableColumnWithVocab{&startSideResult->idTable(), startNodes,
-                                    startSideResult->getCopyOfLocalVocab()};
-    } else {
-      for (auto& [idTable, localVocab] : startSideResult->idTables()) {
-        // Bound -> var|id
-        std::span<const Id> startNodes =
-            idTable.getColumn(startSide.treeAndCol_.value().second);
-        co_yield TableColumnWithVocab{&idTable, startNodes,
-                                      std::move(localVocab)};
+  struct SetupNodes : ad_utility::InputRangeFromGet<TableColumnWithVocab> {
+    const TransitivePathSide& startSide_;
+    std::shared_ptr<const Result> startSideResult_;
+    bool fullyMaterializedResult_;
+    bool fullyMaterializedResultReturned_{false};
+    std::optional<Result::LazyResult> startSideResultIdTables_;
+    std::optional<Result::LazyResult::iterator> startSideResultNext_;
+
+    /**
+     * @param startSide The TransitivePathSide where the edges start
+     * @param startSideResult A `Result` wrapping an `IdTable` containing the
+     * Ids for the startSide
+     */
+    SetupNodes(const TransitivePathSide& startSide,
+               std::shared_ptr<const Result> startSideResult)
+        : startSide_{startSide},
+          startSideResult_{std::move(startSideResult)},
+          fullyMaterializedResult_{startSideResult_->isFullyMaterialized()} {
+      if (!fullyMaterializedResult_) {
+        startSideResultIdTables_ = std::optional(
+            Result::LazyResult{std::move(startSideResult_->idTables())});
       }
     }
-  }
+
+    std::optional<TableColumnWithVocab> get() {
+      if (fullyMaterializedResult_) {
+        if (fullyMaterializedResultReturned_) {
+          return std::nullopt;
+        } else {
+          std::span<const Id> startNodes =
+              startSideResult_->idTable().getColumn(
+                  startSide_.treeAndCol_.value().second);
+          fullyMaterializedResultReturned_ = true;
+          return TableColumnWithVocab{&startSideResult_->idTable(), startNodes,
+                                      startSideResult_->getCopyOfLocalVocab()};
+        }
+      } else {
+        AD_CONTRACT_CHECK(startSideResultIdTables_.has_value());
+        if (!startSideResultNext_.has_value()) {
+          startSideResultNext_ = startSideResultIdTables_.value().begin();
+        } else if (startSideResultNext_.value() !=
+                   startSideResultIdTables_.value().end()) {
+          startSideResultNext_.value()++;
+        }
+        if (startSideResultNext_.value() ==
+            startSideResultIdTables_.value().end()) {
+          return std::nullopt;
+        }
+        auto& idTable = startSideResultNext_.value()->idTable_;
+        auto& localVocab = startSideResultNext_.value()->localVocab_;
+        std::span<const Id> startNodes =
+            idTable.getColumn(startSide_.treeAndCol_.value().second);
+        return TableColumnWithVocab{&idTable, startNodes,
+                                    std::move(localVocab)};
+      }
+    }
+  };
 
   virtual T setupEdgesMap(const IdTable& dynSub,
                           const TransitivePathSide& startSide,
