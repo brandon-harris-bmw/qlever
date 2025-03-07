@@ -1,6 +1,7 @@
 //  Copyright 2022, University of Freiburg,
 //  Chair of Algorithms and Data Structures.
 //  Author: Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>
+// Copyright 2025, Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
 
 #pragma once
 
@@ -332,6 +333,7 @@ class InputRangeFromGet {
     return Iterator{this};
   }
   Sentinel end() const { return {}; };
+  using iterator = Iterator; // TODO bharris: Can we simply rename the Iterator to iterator, or is that too much scope?
 };
 
 // This class takes an arbitrary input range, and turns it into a class that
