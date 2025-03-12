@@ -1,6 +1,7 @@
 // Copyright 2022 - 2023, University of Freiburg,
 // Chair of Algorithms and Data Structures.
 // Author: Hannah Bast (bast@cs.uni-freiburg.de)
+// Copyright 2025, Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
 
 #include "engine/Service.h"
 
@@ -501,6 +502,46 @@ std::optional<std::string> Service::idToValueForValuesClause(
   }
 }
 
+struct PartialResultGenerator
+    : ad_utility::InputRangeFromGet<Result::IdTableVocabPair> {
+  std::vector<Result::IdTableVocabPair> pairs_;
+  Result::LazyResult prevGenerator_;
+  ql::ranges::iterator_t<Result::LazyResult> prevGeneratorNext_;
+  std::optional<std::vector<Result::IdTableVocabPair>::iterator> nextPair_;
+
+  PartialResultGenerator(std::vector<Result::IdTableVocabPair> pairs,
+                         Result::LazyResult prevGenerator,
+                         ql::ranges::iterator_t<Result::LazyResult> it)
+      : pairs_(std::move(pairs)),
+        prevGenerator_(std::move(prevGenerator)),
+        prevGeneratorNext_(std::move(it)) {}
+
+  std::optional<Result::IdTableVocabPair> get() {
+    std::optional<Result::IdTableVocabPair> retval = std::nullopt;
+    if (!nextPair_.has_value()) {
+      nextPair_ = pairs_.begin();
+      Result::IdTableVocabPair& pair = *(nextPair_.value());
+      retval = std::optional{std::move(pair)};
+    } else if (nextPair_.value() != pairs_.end()) {
+      nextPair_.value()++;
+      if ((nextPair_.value() != pairs_.end())) {
+        Result::IdTableVocabPair& pair = *(nextPair_.value());
+        retval = std::optional{std::move(pair)};
+      } else {
+        Result::IdTableVocabPair& pair = *prevGeneratorNext_;
+        retval = std::optional{std::move(pair)};
+      }
+    } else if (prevGeneratorNext_ != prevGenerator_.end()) {
+      prevGeneratorNext_++;
+      if (prevGeneratorNext_ != prevGenerator_.end()) {
+        Result::IdTableVocabPair& pair = *prevGeneratorNext_;
+        retval = std::optional{std::move(pair)};
+      }
+    }
+    return retval;
+  }
+};
+
 // ____________________________________________________________________________
 void Service::precomputeSiblingResult(std::shared_ptr<Operation> left,
                                       std::shared_ptr<Operation> right,
@@ -564,19 +605,6 @@ void Service::precomputeSiblingResult(std::shared_ptr<Operation> left,
     return;
   }
 
-  // Creates a `Result::Generator` from partially materialized result data.
-  auto partialResultGenerator =
-      [](std::vector<Result::IdTableVocabPair> pairs,
-         Result::LazyResult prevGenerator,
-         ql::ranges::iterator_t<Result::LazyResult> it) -> Result::Generator {
-    for (auto& pair : pairs) {
-      co_yield pair;
-    }
-    for (auto& pair : ql::ranges::subrange{it, prevGenerator.end()}) {
-      co_yield pair;
-    }
-  };
-
   // Start materializing the lazy `siblingResult`.
   size_t rows = 0;
   std::vector<Result::IdTableVocabPair> resultPairs;
@@ -594,8 +622,9 @@ void Service::precomputeSiblingResult(std::shared_ptr<Operation> left,
       // partially materialized result to the sibling.
       sibling->precomputedResultBecauseSiblingOfService() =
           std::make_shared<const Result>(
-              partialResultGenerator(std::move(resultPairs),
-                                     std::move(generator), std::move(++it)),
+              Result::LazyResult{PartialResultGenerator(std::move(resultPairs),
+                                                        std::move(generator),
+                                                        std::move(++it))},
               siblingResult->sortedBy());
       addRuntimeInfo(false);
       return;
