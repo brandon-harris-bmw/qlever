@@ -1,6 +1,7 @@
 // Copyright 2022 - 2023, University of Freiburg,
 // Chair of Algorithms and Data Structures.
 // Author: Hannah Bast (bast@cs.uni-freiburg.de)
+// Copyright 2025, Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
 
 #pragma once
 
@@ -143,9 +144,7 @@ class Service : public Operation {
 
   // Compute the result lazy as IdTable generator.
   // If the `singleIdTable` flag is set, the result is yielded as one idTable.
-  Result::Generator computeResultLazily(
-      const std::vector<std::string> vars,
-      ad_utility::LazyJsonParser::Generator body, bool singleIdTable);
+  struct ComputeResultLazily;
 
   FRIEND_TEST(ServiceTest, computeResult);
   FRIEND_TEST(ServiceTest, getCacheKey);
