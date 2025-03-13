@@ -123,6 +123,99 @@ Result Service::computeResult(bool requestLaziness) {
   }
 }
 
+struct Service::ComputeResultLazily
+    : ad_utility::InputRangeFromGet<Result::IdTableVocabPair> {
+  Service& parent_;
+  const std::vector<std::string> vars_;
+  ad_utility::LazyJsonParser::Generator body_;
+  bool singleIdTable_;
+  LocalVocab localVocab_;
+  IdTable idTable_;
+  size_t rowIdx_ = 0;
+  bool varsChecked_{false};
+  bool resultExists_{false};
+  std::optional<ad_utility::LazyJsonParser::Generator::iterator> bodyNext_;
+
+  ComputeResultLazily(Service& parent, const std::vector<std::string> vars,
+                      ad_utility::LazyJsonParser::Generator body,
+                      bool singleIdTable)
+      : parent_(parent),
+        vars_(std::move(vars)),
+        body_(std::move(body)),
+        singleIdTable_(singleIdTable),
+        localVocab_(),
+        idTable_(parent.getResultWidth(),
+                 parent.getExecutionContext()->getAllocator()) {}
+
+  std::optional<Result::IdTableVocabPair> get() {
+    try {
+      if (!bodyNext_.has_value()) {
+        bodyNext_ = body_.begin();
+      } else if (bodyNext_.value() != body_.end()) {
+        bodyNext_.value()++;
+      } else {
+        return std::nullopt;
+      }
+      while (bodyNext_.value() != body_.end()) {
+        const nlohmann::json& partJson = *(bodyNext_.value());
+        if (partJson.contains("head")) {
+          AD_CORRECTNESS_CHECK(!varsChecked_);
+          parent_.verifyVariables(partJson["head"], body_.details());
+          varsChecked_ = true;
+        }
+
+        CALL_FIXED_SIZE(parent_.getResultWidth(), &Service::writeJsonResult,
+                        &parent_, vars_, partJson, &idTable_, &localVocab_,
+                        rowIdx_);
+        resultExists_ = true;
+        if (!singleIdTable_) {
+          Result::IdTableVocabPair pair{std::move(idTable_),
+                                        std::move(localVocab_)};
+          // co_yield pair;
+          idTable_.clear();
+          localVocab_ = LocalVocab{};
+          rowIdx_ = 0;
+          return pair;
+          // Move back to reuse buffer if not moved out.
+          // idTable_ = std::move(pair.idTable_);
+        }
+        bodyNext_.value()++;
+      }
+    } catch (const ad_utility::LazyJsonParser::Error& e) {
+      parent_.throwErrorWithContext(
+          absl::StrCat("Parser failed with error: '", e.what(), "'"),
+          body_.details().first100_, body_.details().last100_);
+    }
+
+    // As the LazyJsonParser only passes parts of the result that match
+    // the expected structure, no result implies an unexpected
+    // structure.
+    if (!resultExists_) {
+      parent_.throwErrorWithContext(
+          "JSON result does not have the expected structure (results "
+          "section "
+          "missing)",
+          body_.details().first100_, body_.details().last100_);
+    }
+
+    if (!varsChecked_) {
+      parent_.throwErrorWithContext(
+          "JSON result does not have the expected structure (head "
+          "section "
+          "missing)",
+          body_.details().first100_, body_.details().last100_);
+    }
+
+    if (singleIdTable_) {
+      // co_yield {std::move(idTable_), std::move(localVocab_)};
+      return Result::IdTableVocabPair(std::move(idTable_),
+                                      std::move(localVocab_));
+    }
+
+    return std::nullopt;
+  }
+};
+
 // ____________________________________________________________________________
 Result Service::computeResultImpl(bool requestLaziness) {
   // Get the URL of the SPARQL endpoint.
@@ -189,11 +282,12 @@ Result Service::computeResultImpl(bool requestLaziness) {
   // Note: The `body`-generator also keeps the complete response connection
   // alive, so we have no lifetime issue here(see `HttpRequest::send` for
   // details).
-  auto generator =
-      computeResultLazily(expVariableKeys, std::move(body), !requestLaziness);
+  auto generator = Result::LazyResult{ComputeResultLazily(
+      *this, expVariableKeys, std::move(body), !requestLaziness)};
   return requestLaziness
              ? Result{std::move(generator), resultSortedOn()}
-             : Result{cppcoro::getSingleElement(std::move(generator)),
+             : Result{cppcoro::getSingleElement<Result::IdTableVocabPair>(
+                          std::move(generator)),
                       resultSortedOn()};
 }
 
@@ -239,68 +333,6 @@ void Service::writeJsonResult(const std::vector<std::string>& vars,
 
   *idTablePtr = std::move(idTable).toDynamic();
   checkCancellation();
-}
-
-// ____________________________________________________________________________
-Result::Generator Service::computeResultLazily(
-    const std::vector<std::string> vars,
-    ad_utility::LazyJsonParser::Generator body, bool singleIdTable) {
-  LocalVocab localVocab{};
-  IdTable idTable{getResultWidth(), getExecutionContext()->getAllocator()};
-
-  size_t rowIdx = 0;
-  bool varsChecked{false};
-  bool resultExists{false};
-  try {
-    for (const nlohmann::json& partJson : body) {
-      if (partJson.contains("head")) {
-        AD_CORRECTNESS_CHECK(!varsChecked);
-        verifyVariables(partJson["head"], body.details());
-        varsChecked = true;
-      }
-
-      CALL_FIXED_SIZE(getResultWidth(), &Service::writeJsonResult, this, vars,
-                      partJson, &idTable, &localVocab, rowIdx);
-      if (!singleIdTable) {
-        Result::IdTableVocabPair pair{std::move(idTable),
-                                      std::move(localVocab)};
-        co_yield pair;
-        // Move back to reuse buffer if not moved out.
-        idTable = std::move(pair.idTable_);
-        idTable.clear();
-        localVocab = LocalVocab{};
-        rowIdx = 0;
-      }
-      resultExists = true;
-    }
-  } catch (const ad_utility::LazyJsonParser::Error& e) {
-    throwErrorWithContext(
-        absl::StrCat("Parser failed with error: '", e.what(), "'"),
-        body.details().first100_, body.details().last100_);
-  }
-
-  // As the LazyJsonParser only passes parts of the result that match
-  // the expected structure, no result implies an unexpected
-  // structure.
-  if (!resultExists) {
-    throwErrorWithContext(
-        "JSON result does not have the expected structure (results "
-        "section "
-        "missing)",
-        body.details().first100_, body.details().last100_);
-  }
-
-  if (!varsChecked) {
-    throwErrorWithContext(
-        "JSON result does not have the expected structure (head "
-        "section "
-        "missing)",
-        body.details().first100_, body.details().last100_);
-  }
-
-  if (singleIdTable) {
-    co_yield {std::move(idTable), std::move(localVocab)};
-  }
 }
 
 // ____________________________________________________________________________
