@@ -1,6 +1,7 @@
 //  Copyright 2023, University of Freiburg,
 //                  Chair of Algorithms and Data Structures.
 //  Author: Johannes Kalmbach <kalmbach@cs.uni-freiburg.de>
+// Copyright 2025, Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
 
 #ifndef QLEVER_SRC_ENGINE_CARTESIANPRODUCTJOIN_H
 #define QLEVER_SRC_ENGINE_CARTESIANPRODUCTJOIN_H
@@ -118,9 +119,8 @@ class CartesianProductJoin : public Operation {
   // `lastTableOffset` is the offset of the last table in the range. This is
   // used to handle `IdTable`s yielded by generators where the range of indices
   // they represent do not cover the whole result.
-  CPP_template(typename R)(requires ql::ranges::range<R>) Result::Generator
-      produceTablesLazily(LocalVocab mergedVocab, R idTables, size_t offset,
-                          size_t limit, size_t lastTableOffset = 0) const;
+  CPP_template(typename R)(
+      requires ql::ranges::range<R>) struct ProduceTablesLazily;
 
   // Similar to `produceTablesLazily` but can handle a single lazy result.
   Result::Generator createLazyConsumer(
