@@ -1,5 +1,6 @@
 //  Copyright 2021, University of Freiburg, Chair of Algorithms and Data
 //  Structures. Author: Johannes Kalmbach <kalmbacj@cs.uni-freiburg.de>
+// Copyright 2025, Bayerische Motoren Werke Aktiengesellschaft (BMW AG)
 
 // Several templated helper functions that are used for the Expression module
 
@@ -43,6 +44,34 @@ inline std::span<const ValueId> getIdsFromVariable(
 /// `SingleExpressionResult`s after applying a `Transformation` to them.
 /// Typically, this transformation is one of the value getters from
 /// `SparqlExpressionValueGetters` with an already bound `EvaluationContext`.
+template<typename T, typename Transformation = std::identity>
+requires SingleExpressionResult<T> CPP_and //isConstantResult<T> CPP_and
+        ranges::invocable<Transformation, T>
+struct ResultGenerator
+    : ad_utility::InputRangeFromGet<const std::decay_t<std::invoke_result_t<Transformation, T>>> {
+  size_t numItems_;
+  // auto transformed_;
+  size_t offset = 0;
+  T constant_;
+  Transformation transformation_;
+
+  ResultGenerator(T constant, size_t numItems, Transformation transformation = {})
+      : numItems_(std::move(numItems)),
+        // transformed_(transformation(constant)),
+        constant_(std::move(constant)),
+        transformation_(std::move(transformation)) {}
+
+  std::optional<const std::decay_t<std::invoke_result_t<Transformation, T>>> get() {
+    auto transformed = transformation_(constant_);
+    if (offset < numItems_) {
+      offset++;
+      return transformed;
+    } else {
+      return std::nullopt;
+    }
+  }
+};
+
 CPP_template(typename T, typename Transformation = std::identity)(
     requires SingleExpressionResult<T> CPP_and isConstantResult<T> CPP_and
         ranges::invocable<Transformation, T>)
@@ -99,7 +128,7 @@ CPP_template(typename Input, typename Transformation = std::identity)(
     return resultGenerator(getIdsFromVariable(AD_FWD(input), context), numItems,
                            transformation);
   } else {
-    return resultGenerator(AD_FWD(input), numItems, transformation);
+    return ad_utility::InputRangeTypeErased<const std::decay_t<std::invoke_result_t<Transformation, decltype(AD_FWD(input))>>>{ResultGenerator(AD_FWD(input), numItems, transformation)};
   }
 }
 
