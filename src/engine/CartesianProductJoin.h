@@ -122,11 +122,8 @@ class CartesianProductJoin : public Operation {
   CPP_template(typename R)(
       requires ql::ranges::range<R>) struct ProduceTablesLazily;
 
-  // Similar to `produceTablesLazily` but can handle a single lazy result.
-  Result::Generator createLazyConsumer(
-      LocalVocab staticMergedVocab,
-      std::vector<std::shared_ptr<const Result>> subresults,
-      std::shared_ptr<const Result> lazyResult) const;
+  // Similar to `ProduceTablesLazily` but can handle a single lazy result.
+  struct CreateLazyConsumer;
 };
 
 #endif  // QLEVER_SRC_ENGINE_CARTESIANPRODUCTJOIN_H
