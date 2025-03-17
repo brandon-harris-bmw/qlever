@@ -179,6 +179,92 @@ CPP_template_def(typename R)(
   }
 };
 
+// _____________________________________________________________________________
+struct CartesianProductJoin::CreateLazyConsumer
+    : ad_utility::InputRangeFromGet<Result::IdTableVocabPair> {
+  const CartesianProductJoin& parent_;
+  LocalVocab staticMergedVocab_;
+  std::shared_ptr<const Result> lazyResult_;
+  size_t limit_;
+  size_t offset_;
+  std::vector<std::reference_wrapper<const IdTable>> idTables_;
+  std::optional<Result::LazyResult> lazyResultIdTables_;
+  std::optional<Result::LazyResult::iterator> lazyResultIdTablesNext_;
+  size_t lastTableOffset_ = 0;
+  size_t producedTableSize_ = 0;
+  std::optional<Result::LazyResult> lazilyProducedIdTables_;
+  std::optional<Result::LazyResult::iterator> lazilyProducedIdTablesNext_;
+  bool keepGoing_ = true;
+
+  CreateLazyConsumer(const CartesianProductJoin& parent,
+                     LocalVocab staticMergedVocab,
+                     std::vector<std::shared_ptr<const Result>> subresults,
+                     std::shared_ptr<const Result> lazyResult)
+      : parent_(parent),
+        staticMergedVocab_(std::move(staticMergedVocab)),
+        lazyResult_(std::move(lazyResult)),
+        limit_(parent_.getLimit().limitOrDefault()),
+        offset_(parent_.getLimit()._offset) {
+    AD_CONTRACT_CHECK(lazyResult_);
+    idTables_.reserve(subresults.size() + 1);
+    for (const auto& result : subresults) {
+      idTables_.emplace_back(result->idTable());
+    }
+  }
+
+  std::optional<Result::IdTableVocabPair> get() {
+    if (!lazyResultIdTablesNext_.has_value()) {
+      lazyResultIdTables_ = std::move(lazyResult_->idTables());
+      lazyResultIdTablesNext_ = lazyResultIdTables_.value().begin();
+    }
+    while (keepGoing_ &&
+           lazyResultIdTablesNext_ != lazyResultIdTables_.value().end()) {
+      if (!lazilyProducedIdTablesNext_.has_value()) {
+        if (lazyResultIdTablesNext_.value()->idTable_.empty()) {
+          // Move to next ID table
+          lazyResultIdTablesNext_.value()++;
+          continue;
+        }
+        idTables_.emplace_back(lazyResultIdTablesNext_.value()->idTable_);
+        lazyResultIdTablesNext_.value()->localVocab_.mergeWith(staticMergedVocab_);
+        producedTableSize_ = 0;
+        lazilyProducedIdTables_ = Result::LazyResult{ProduceTablesLazily(
+            parent_, std::move(lazyResultIdTablesNext_.value()->localVocab_),
+            ql::views::transform(
+                idTables_,
+                [](const auto& wrapper) -> const IdTable& { return wrapper; }),
+            offset_, limit_, parent_.chunkSize_, lastTableOffset_)};
+        lazilyProducedIdTablesNext_ = lazilyProducedIdTables_.value().begin();
+      } else if (lazilyProducedIdTablesNext_.value() !=
+                 lazilyProducedIdTables_.value().end()) {
+        lazilyProducedIdTablesNext_.value()++;
+      }
+      if (lazilyProducedIdTablesNext_.value() !=
+          lazilyProducedIdTables_.value().end()) {
+        auto& idTableAndVocab = *lazilyProducedIdTablesNext_.value();
+        producedTableSize_ += idTableAndVocab.idTable_.size();
+        return std::optional{std::move(idTableAndVocab)};
+      } else {
+        // Reset after iterating lazilyProducedIdTables_
+        lazilyProducedIdTables_.reset();
+        lazilyProducedIdTablesNext_.reset();
+      }
+      AD_CORRECTNESS_CHECK(limit_ >= producedTableSize_);
+      limit_ -= producedTableSize_;
+      if (limit_ == 0) {
+        // Avoid iterating if get() is called again
+        keepGoing_ = false;
+        break;
+      }
+      offset_ += producedTableSize_;
+      lastTableOffset_ += lazyResultIdTablesNext_.value()->idTable_.size();
+      idTables_.pop_back();
+      lazyResultIdTablesNext_.value()++;
+    }
+    return std::nullopt;
+  }
+};
+
 // ____________________________________________________________________________
 Result CartesianProductJoin::computeResult(bool requestLaziness) {
   if (knownEmptyResult()) {
@@ -202,8 +288,9 @@ Result CartesianProductJoin::computeResult(bool requestLaziness) {
   }
 
   if (lazyResult) {
-    return {createLazyConsumer(std::move(staticMergedVocab),
-                               std::move(subResults), std::move(lazyResult)),
+    return {Result::LazyResult{CreateLazyConsumer(
+                *this, std::move(staticMergedVocab), std::move(subResults),
+                std::move(lazyResult))},
             resultSortedOn()};
   }
 
@@ -353,47 +440,6 @@ CartesianProductJoin::calculateSubResults(bool requestLaziness) {
   }
 
   return {std::move(subResults), std::move(lazyResult)};
-}
-
-// _____________________________________________________________________________
-Result::Generator CartesianProductJoin::createLazyConsumer(
-    LocalVocab staticMergedVocab,
-    std::vector<std::shared_ptr<const Result>> subresults,
-    std::shared_ptr<const Result> lazyResult) const {
-  AD_CONTRACT_CHECK(lazyResult);
-  size_t limit = getLimit().limitOrDefault();
-  size_t offset = getLimit()._offset;
-  std::vector<std::reference_wrapper<const IdTable>> idTables;
-  idTables.reserve(subresults.size() + 1);
-  for (const auto& result : subresults) {
-    idTables.emplace_back(result->idTable());
-  }
-  size_t lastTableOffset = 0;
-  for (auto& [idTable, localVocab] : lazyResult->idTables()) {
-    if (idTable.empty()) {
-      continue;
-    }
-    idTables.emplace_back(idTable);
-    localVocab.mergeWith(staticMergedVocab);
-    size_t producedTableSize = 0;
-    for (auto& idTableAndVocab : Result::LazyResult{ProduceTablesLazily(
-             *this, std::move(localVocab),
-             ql::views::transform(
-                 idTables,
-                 [](const auto& wrapper) -> const IdTable& { return wrapper; }),
-             offset, limit, chunkSize_, lastTableOffset)}) {
-      producedTableSize += idTableAndVocab.idTable_.size();
-      co_yield idTableAndVocab;
-    }
-    AD_CORRECTNESS_CHECK(limit >= producedTableSize);
-    limit -= producedTableSize;
-    if (limit == 0) {
-      break;
-    }
-    offset += producedTableSize;
-    lastTableOffset += idTable.size();
-    idTables.pop_back();
-  }
 }
 
 // _____________________________________________________________________________
