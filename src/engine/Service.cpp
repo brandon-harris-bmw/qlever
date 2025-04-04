@@ -502,46 +502,6 @@ std::optional<std::string> Service::idToValueForValuesClause(
   }
 }
 
-struct PartialResultGenerator
-    : ad_utility::InputRangeFromGet<Result::IdTableVocabPair> {
-  std::vector<Result::IdTableVocabPair> pairs_;
-  Result::LazyResult prevGenerator_;
-  ql::ranges::iterator_t<Result::LazyResult> prevGeneratorNext_;
-  std::optional<std::vector<Result::IdTableVocabPair>::iterator> nextPair_;
-
-  PartialResultGenerator(std::vector<Result::IdTableVocabPair> pairs,
-                         Result::LazyResult prevGenerator,
-                         ql::ranges::iterator_t<Result::LazyResult> it)
-      : pairs_(std::move(pairs)),
-        prevGenerator_(std::move(prevGenerator)),
-        prevGeneratorNext_(std::move(it)) {}
-
-  std::optional<Result::IdTableVocabPair> get() {
-    std::optional<Result::IdTableVocabPair> retval = std::nullopt;
-    if (!nextPair_.has_value()) {
-      nextPair_ = pairs_.begin();
-      Result::IdTableVocabPair& pair = *(nextPair_.value());
-      retval = std::optional{std::move(pair)};
-    } else if (nextPair_.value() != pairs_.end()) {
-      nextPair_.value()++;
-      if ((nextPair_.value() != pairs_.end())) {
-        Result::IdTableVocabPair& pair = *(nextPair_.value());
-        retval = std::optional{std::move(pair)};
-      } else {
-        Result::IdTableVocabPair& pair = *prevGeneratorNext_;
-        retval = std::optional{std::move(pair)};
-      }
-    } else if (prevGeneratorNext_ != prevGenerator_.end()) {
-      prevGeneratorNext_++;
-      if (prevGeneratorNext_ != prevGenerator_.end()) {
-        Result::IdTableVocabPair& pair = *prevGeneratorNext_;
-        retval = std::optional{std::move(pair)};
-      }
-    }
-    return retval;
-  }
-};
-
 // ____________________________________________________________________________
 void Service::precomputeSiblingResult(std::shared_ptr<Operation> left,
                                       std::shared_ptr<Operation> right,
@@ -622,9 +582,11 @@ void Service::precomputeSiblingResult(std::shared_ptr<Operation> left,
       // partially materialized result to the sibling.
       sibling->precomputedResultBecauseSiblingOfService() =
           std::make_shared<const Result>(
-              Result::LazyResult{PartialResultGenerator(std::move(resultPairs),
-                                                        std::move(generator),
-                                                        std::move(++it))},
+              Result::LazyResult{ad_utility::MultisourceCachingInputRange<
+                  decltype(resultPairs), decltype(generator),
+                  Result::IdTableVocabPair>(std::move(resultPairs),
+                                            std::move(generator), {},
+                                            std::move(++it))},
               siblingResult->sortedBy());
       addRuntimeInfo(false);
       return;
