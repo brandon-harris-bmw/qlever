@@ -259,8 +259,7 @@ Result::LazyResult Service::computeResultLazily(
       return std::nullopt;
     }
     try {
-      auto partJsonOpt = inputRange.get();
-      while (partJsonOpt.has_value()) {
+      while (auto partJsonOpt = inputRange.get()) {
         const nlohmann::json& partJson = partJsonOpt.value();
         if (partJson.contains("head")) {
           AD_CORRECTNESS_CHECK(!varsChecked);
@@ -280,7 +279,6 @@ Result::LazyResult Service::computeResultLazily(
           rowIdx = 0;
           return pair;
         }
-        partJsonOpt = inputRange.get();
       }
     } catch (const ad_utility::LazyJsonParser::Error& e) {
       service->throwErrorWithContext(
