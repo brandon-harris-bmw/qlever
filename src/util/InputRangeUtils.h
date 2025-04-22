@@ -262,7 +262,7 @@ CPP_class_template(typename ViewType)(
         return elementOpt;
       }
       // Done with current view, but not all views
-      collectionIt_++;
+      ++collectionIt_;
     }
     // Done iterating over all views
     return std::nullopt;
