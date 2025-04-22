@@ -255,6 +255,7 @@ Result::LazyResult Service::computeResultLazily(
               rowIdx = size_t{0}, varsChecked = false, resultExists = false,
               singleIdTableReturned =
                   false]() mutable -> std::optional<Result::IdTableVocabPair> {
+    auto& details = inputRange.view().base().details();
     if (singleIdTableReturned) {
       return std::nullopt;
     }
@@ -263,8 +264,7 @@ Result::LazyResult Service::computeResultLazily(
         const nlohmann::json& partJson = partJsonOpt.value();
         if (partJson.contains("head")) {
           AD_CORRECTNESS_CHECK(!varsChecked);
-          service->verifyVariables(partJson["head"],
-                                   inputRange.view().base().details());
+          service->verifyVariables(partJson["head"], details);
           varsChecked = true;
         }
 
@@ -283,8 +283,7 @@ Result::LazyResult Service::computeResultLazily(
     } catch (const ad_utility::LazyJsonParser::Error& e) {
       service->throwErrorWithContext(
           absl::StrCat("Parser failed with error: '", e.what(), "'"),
-          inputRange.view().base().details().first100_,
-          inputRange.view().base().details().last100_);
+          details.first100_, details.last100_);
     }
 
     // As the LazyJsonParser only passes parts of the result that match
@@ -295,8 +294,7 @@ Result::LazyResult Service::computeResultLazily(
           "JSON result does not have the expected structure (results "
           "section "
           "missing)",
-          inputRange.view().base().details().first100_,
-          inputRange.view().base().details().last100_);
+          details.first100_, details.last100_);
     }
 
     if (!varsChecked) {
@@ -304,8 +302,7 @@ Result::LazyResult Service::computeResultLazily(
           "JSON result does not have the expected structure (head "
           "section "
           "missing)",
-          inputRange.view().base().details().first100_,
-          inputRange.view().base().details().last100_);
+          details.first100_, details.last100_);
     }
 
     if (singleIdTable) {
