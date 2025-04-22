@@ -26,7 +26,7 @@ namespace ad_utility {
 // 3. This class only yields an input range, independent of the range category
 // of the input.
 CPP_class_template(typename View, typename F)(requires(
-    ql::ranges::input_range<View>//&& ql::ranges::view<View>&&
+    ql::ranges::input_range<View>&&  // ql::ranges::view<View>&&
         std::is_object_v<F>&&
             ranges::invocable<F, ql::ranges::range_reference_t<
                                      View>>)) struct CachingTransformInputRange
