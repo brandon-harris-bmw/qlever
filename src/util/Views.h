@@ -128,6 +128,8 @@ CPP_template(typename UnderlyingRange, bool supportConst = true)(
 
   constexpr auto end() { return ql::ranges::end(underlyingRange_); }
 
+  constexpr auto get() { return underlyingRange_.get(); }
+
   CPP_auto_member constexpr auto CPP_fun(begin)()(
       const  //
       requires(supportConst&& ql::ranges::range<const UnderlyingRange>)) {

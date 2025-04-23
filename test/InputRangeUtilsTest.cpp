@@ -219,18 +219,15 @@ TEST(CachingContinuableTransformInputRange, StatefulFunctor) {
 TEST(ConcatenatedInputRange, IterateMultipleViews) {
   // This test ensures that all values are returned in the order they are given
   // and that nullopt is returned for all subsequent calls
-  std::vector<
-      std::unique_ptr<ad_utility::RangeToInputRangeFromGet<std::vector<int>>>>
-      viewCollection;
-  viewCollection.push_back(
-      std::make_unique<ad_utility::RangeToInputRangeFromGet<std::vector<int>>>(
-          std::vector<int>{42}));
-  viewCollection.push_back(
-      std::make_unique<ad_utility::RangeToInputRangeFromGet<std::vector<int>>>(
-          std::vector<int>{43, 44}));
-  viewCollection.push_back(
-      std::make_unique<ad_utility::RangeToInputRangeFromGet<std::vector<int>>>(
-          std::vector<int>{24, 25}));
+  using ViewPtr = std::unique_ptr<ad_utility::OwningView<
+      ad_utility::RangeToInputRangeFromGet<std::vector<int>>>>;
+  std::vector<ViewPtr> viewCollection;
+  viewCollection.push_back(ViewPtr(new ad_utility::OwningView(
+      ad_utility::RangeToInputRangeFromGet(std::vector<int>{42}))));
+  viewCollection.push_back(ViewPtr(new ad_utility::OwningView(
+      ad_utility::RangeToInputRangeFromGet(std::vector<int>{43, 44}))));
+  viewCollection.push_back(ViewPtr(new ad_utility::OwningView(
+      ad_utility::RangeToInputRangeFromGet(std::vector<int>{24, 25}))));
 
   ad_utility::ConcatenatedInputRange range{std::move(viewCollection)};
 
@@ -263,10 +260,11 @@ TEST(ConcatenatedInputRange, IterateMultipleViews) {
 
 // Test for iterating past the end of a CachingTransformInput range
 TEST(ConcatenatedInputRange, EmptyInput) {
-  // This test ensures that empty views do not result in errors and simply return nullopt
-  std::vector<
-      std::unique_ptr<ad_utility::RangeToInputRangeFromGet<std::vector<int>>>>
-      viewCollection;
+  // This test ensures that empty views do not result in errors and simply
+  // return nullopt
+  using ViewPtr = std::unique_ptr<ad_utility::OwningView<
+      ad_utility::RangeToInputRangeFromGet<std::vector<int>>>>;
+  std::vector<ViewPtr> viewCollection;
 
   ad_utility::ConcatenatedInputRange range{std::move(viewCollection)};
 

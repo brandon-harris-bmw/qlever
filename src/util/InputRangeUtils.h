@@ -236,7 +236,8 @@ CachingContinuableTransformInputRange(Range&&, F)
 // subsequent get() calls. Note: This class only works with Views that implement
 // "get()" like the InputRangeFromGet subclasses.
 CPP_class_template(typename ViewType)(
-    requires(ql::ranges::input_range<ViewType>)) struct ConcatenatedInputRange
+    requires(ql::ranges::input_range<ViewType>&&
+                 ql::ranges::view<ViewType>)) struct ConcatenatedInputRange
     : ad_utility::InputRangeFromGet<ql::ranges::range_value_t<ViewType>> {
   using ViewCollection = std::vector<std::unique_ptr<ViewType>>;
   ViewCollection viewCollection_;
@@ -260,5 +261,9 @@ CPP_class_template(typename ViewType)(
     return std::nullopt;
   }
 };
+
+template <typename Range>
+ConcatenatedInputRange(std::vector<std::unique_ptr<Range>>)
+    -> ConcatenatedInputRange<all_t<Range>>;
 
 }  // namespace ad_utility
