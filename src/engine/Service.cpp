@@ -582,11 +582,17 @@ void Service::precomputeSiblingResult(std::shared_ptr<Operation> left,
   // Start materializing the lazy `siblingResult`.
   size_t rows = 0;
   std::vector<Result::IdTableVocabPair> resultPairs;
-  auto generator = std::move(siblingResult->idTables());
+  constexpr auto identityFunction = [](auto& p) { return std::move(p); };
+  // We move the results into a `CachingTransformInputRange` because it will
+  // track the last accessed result and continue at the first unaccessed
+  // result with subsequent calls to get(). Therefore, we do not need to
+  // keep and pass an iterator to the sibling result if the max row threshold
+  // is exceeded
+  auto generator = ad_utility::CachingTransformInputRange(std::move(siblingResult->idTables()), identityFunction);
   const size_t maxValueRows =
       RuntimeParameters().get<"service-max-value-rows">();
-  for (auto it = generator.begin(); it != generator.end(); ++it) {
-    auto& pair = *it;
+  while (auto pairOpt = generator.get()) {
+    auto& pair = pairOpt.value();
     rows += pair.idTable_.size();
     resultPairs.push_back(std::move(pair));
 
@@ -594,15 +600,11 @@ void Service::precomputeSiblingResult(std::shared_ptr<Operation> left,
       // Stop precomputation as the size of `siblingResult` exceeds the
       // threshold it is not useful for the service operation. Pass the
       // partially materialized result to the sibling.
-      auto identityFunction = [](auto& p) { return std::move(p); };
       std::vector<std::unique_ptr<Result::LazyResult>> viewCollection;
       viewCollection.emplace_back(std::make_unique<Result::LazyResult>(
           ad_utility::CachingTransformInputRange(std::move(resultPairs),
                                                  identityFunction)));
-      viewCollection.emplace_back(std::make_unique<Result::LazyResult>(
-          ad_utility::CachingTransformInputRange(std::move(generator),
-                                                 std::move(++it),
-                                                 std::move(identityFunction))));
+      viewCollection.emplace_back(std::make_unique<Result::LazyResult>(std::move(generator)));
       sibling->precomputedResultBecauseSiblingOfService() =
           std::make_shared<const Result>(
               Result::LazyResult{
