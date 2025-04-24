@@ -229,6 +229,12 @@ template <typename Range, typename F>
 CachingContinuableTransformInputRange(Range&&, F)
     -> CachingContinuableTransformInputRange<all_t<Range>, F>;
 
+// This class can be used to concatenate input ranges into a single range.
+// Elements within ranges are iterated in order until their end, at which point
+// the next element will be the first element of the next range. When all
+// elements of all ranges have been iterated, nullopt is returned for all
+// subsequent get() calls. Note: This class only works with Views that implement
+// "get()" like the InputRangeFromGet subclasses.
 CPP_class_template(typename ViewType)(
     requires(ql::ranges::input_range<ViewType>)) struct ConcatenatedInputRange
     : ad_utility::InputRangeFromGet<ql::ranges::range_value_t<ViewType>> {
