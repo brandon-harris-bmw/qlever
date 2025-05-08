@@ -79,8 +79,8 @@ CPP_class_template(typename View, typename F)(requires(
 // Deduction guides to correctly propagate the input as a value or reference.
 // This is the exact same way `std::ranges` and `range-v3` behave.
 template <typename Range, typename F>
-CachingTransformInputRange(Range&&,
-                           F) -> CachingTransformInputRange<all_t<Range>, F>;
+CachingTransformInputRange(Range&&, F)
+    -> CachingTransformInputRange<all_t<Range>, F>;
 
 namespace loopControl {
 // A class to represent control flows in generator-like state machines,

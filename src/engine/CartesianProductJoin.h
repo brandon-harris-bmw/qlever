@@ -123,7 +123,7 @@ class CartesianProductJoin : public Operation {
                           size_t limit, size_t lastTableOffset = 0) const;
 
   // Similar to `produceTablesLazily` but can handle a single lazy result.
-  Result::LazyResult createLazyConsumer(
+  Result::Generator createLazyConsumer(
       LocalVocab staticMergedVocab,
       std::vector<std::shared_ptr<const Result>> subresults,
       std::shared_ptr<const Result> lazyResult) const;

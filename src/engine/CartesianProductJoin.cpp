@@ -332,8 +332,8 @@ CPP_template_def(typename R)(requires ql::ranges::range<R>) Result::LazyResult
       if (!idTable.empty()) {
         offset += tableSize;
         limit -= tableSize;
-        return std::optional(
-            Result::IdTableVocabPair{std::move(idTable), mergedVocab.clone()});
+        return std::optional(Result::IdTableVocabPair{std::move(idTable),
+                                                       mergedVocab.clone()});
       }
     }
     return std::nullopt;
@@ -343,7 +343,7 @@ CPP_template_def(typename R)(requires ql::ranges::range<R>) Result::LazyResult
 }
 
 // _____________________________________________________________________________
-Result::LazyResult CartesianProductJoin::createLazyConsumer(
+Result::Generator CartesianProductJoin::createLazyConsumer(
     LocalVocab staticMergedVocab,
     std::vector<std::shared_ptr<const Result>> subresults,
     std::shared_ptr<const Result> lazyResult) const {
@@ -355,69 +355,32 @@ Result::LazyResult CartesianProductJoin::createLazyConsumer(
   for (const auto& result : subresults) {
     idTables.emplace_back(result->idTable());
   }
-
-  auto get = [cartesianProductJoin = this,
-              staticMergedVocab = std::move(staticMergedVocab), limit = limit,
-              offset = offset, idTables = std::move(idTables),
-              lazyResultTables = ad_utility::RangeToInputRangeFromGet(
-                  std::move(lazyResult->idTables())),
-              lastTableOffset = size_t{0}, producedTableSize = size_t{0},
-              inputRange = std::unique_ptr<Result::LazyResult>(nullptr),
-              idTableSize = size_t{
-                  0}]() mutable -> std::optional<Result::IdTableVocabPair> {
+  size_t lastTableOffset = 0;
+  for (auto& [idTable, localVocab] : lazyResult->idTables()) {
+    if (idTable.empty()) {
+      continue;
+    }
+    idTables.emplace_back(idTable);
+    localVocab.mergeWith(staticMergedVocab);
+    size_t producedTableSize = 0;
+    for (auto& idTableAndVocab : produceTablesLazily(
+             std::move(localVocab),
+             ql::views::transform(
+                 idTables,
+                 [](const auto& wrapper) -> const IdTable& { return wrapper; }),
+             offset, limit, lastTableOffset)) {
+      producedTableSize += idTableAndVocab.idTable_.size();
+      co_yield idTableAndVocab;
+    }
+    AD_CORRECTNESS_CHECK(limit >= producedTableSize);
+    limit -= producedTableSize;
     if (limit == 0) {
-      return std::nullopt;
+      break;
     }
-    if (inputRange != nullptr) {
-      if (auto idTableAndVocab = inputRange->get()) {
-        return idTableAndVocab;
-      }
-
-      AD_CORRECTNESS_CHECK(limit >= producedTableSize);
-      limit -= producedTableSize;
-      if (limit == 0) {
-        return std::nullopt;
-      }
-      offset += producedTableSize;
-      lastTableOffset += idTableSize;
-      idTables.pop_back();
-    }
-
-    while (auto lazyIdTableAndVocabOpt = lazyResultTables.get()) {
-      auto& [idTable, localVocab] = lazyIdTableAndVocabOpt.value();
-      if (idTable.empty()) {
-        continue;
-      }
-      idTableSize = idTable.size();
-      idTables.emplace_back(idTable);
-      localVocab.mergeWith(staticMergedVocab);
-
-      auto producerCallback = [&producedTableSize](auto& idTableAndVocab) {
-        producedTableSize += idTableAndVocab.idTable_.size();
-        return std::move(idTableAndVocab);
-      };
-      inputRange = std::unique_ptr<Result::LazyResult>(
-          new Result::LazyResult(ad_utility::CachingTransformInputRange(
-              cartesianProductJoin->produceTablesLazily(
-                  std::move(localVocab),
-                  ql::views::transform(
-                      idTables,
-                      [](const auto& wrapper) -> const IdTable& {
-                        return wrapper;
-                      }),
-                  offset, limit, lastTableOffset),
-              std::move(producerCallback))));
-
-      if (auto idTableAndVocab = inputRange->get()) {
-        return idTableAndVocab;
-      }
-    }
-
-    return std::nullopt;
-  };
-
-  return Result::LazyResult(
-      ad_utility::InputRangeFromGetCallable(std::move(get)));
+    offset += producedTableSize;
+    lastTableOffset += idTable.size();
+    idTables.pop_back();
+  }
 }
 
 // _____________________________________________________________________________
