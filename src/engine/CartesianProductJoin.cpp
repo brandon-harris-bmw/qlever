@@ -359,9 +359,10 @@ Result::LazyResult CartesianProductJoin::createLazyConsumer(
        limit = getLimit().limitOrDefault(), offset = getLimit()._offset,
        idTables = std::move(idTables), inputRange = std::move(inputRange),
        lastTableOffset = size_t{0}, producedTableSize = size_t{0},
-       tableProducer = std::unique_ptr<Result::LazyResult>(nullptr)]() mutable {
+       tableProducer = std::unique_ptr<Result::LazyResult>(nullptr),
+       idTableOpt = std::optional<Result::IdTableVocabPair>{}]() mutable {
         if (tableProducer == nullptr) {
-          auto idTableOpt = inputRange.get();
+          idTableOpt = inputRange.get();
           if (!idTableOpt.has_value()) {
             return Result::IdTableLoopControl::makeBreak();
           }
