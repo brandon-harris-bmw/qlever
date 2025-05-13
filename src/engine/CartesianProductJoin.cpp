@@ -359,10 +359,10 @@ Result::LazyResult CartesianProductJoin::createLazyConsumer(
        limit = getLimit().limitOrDefault(), offset = getLimit()._offset,
        idTables = std::move(idTables), inputRange = std::move(inputRange),
        lastTableOffset = size_t{0}, producedTableSize = size_t{0},
-       tableProducer = std::unique_ptr<Result::LazyResult>(nullptr),
+       tableProducer = std::optional<Result::LazyResult>{},
        idTableOpt = std::optional<Result::IdTableVocabPair>{}]() mutable {
         // Set up tableProducer if necessary
-        if (tableProducer == nullptr) {
+        if (!tableProducer.has_value()) {
           idTableOpt = inputRange.get();
           if (!idTableOpt.has_value()) {
             return Result::IdTableLoopControl::makeBreak();
@@ -374,17 +374,17 @@ Result::LazyResult CartesianProductJoin::createLazyConsumer(
           idTables.emplace_back(idTable);
           localVocab.mergeWith(staticMergedVocab);
           producedTableSize = 0;
-          tableProducer = std::unique_ptr<Result::LazyResult>(new Result::LazyResult{std::move(cartesianProductJoin->produceTablesLazily(
+          tableProducer = cartesianProductJoin->produceTablesLazily(
               std::move(localVocab),
               ql::views::transform(
                   idTables,
                   [](const auto& wrapper) -> const IdTable& { return wrapper; }),
-              offset, limit, lastTableOffset))});
+              offset, limit, lastTableOffset);
           lastTableOffset += idTable.size();
         }
 
         // tableProducer is set up, retrieve and return values
-        if (auto idTableAndVocab = tableProducer->get()) {
+        if (auto idTableAndVocab = tableProducer.value().get()) {
           producedTableSize += idTableAndVocab.value().idTable_.size();
           return Result::IdTableLoopControl::yieldValue(
               std::move(idTableAndVocab.value()));
@@ -400,7 +400,7 @@ Result::LazyResult CartesianProductJoin::createLazyConsumer(
         }
         offset += producedTableSize;
         idTables.pop_back();
-        tableProducer = nullptr;
+        tableProducer = std::nullopt;
         
         // Nothing was returned, keep going to the next result
         // Only break when limit is reached or inputRange is exhausted
